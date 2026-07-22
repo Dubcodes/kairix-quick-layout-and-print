@@ -1,0 +1,13 @@
+{
+  "name": "Kairix Quick Layout & Print",
+  "short_name": "Kairix Print",
+  "description": "Private, precise photo layout and print preparation on your device.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f1eb",
+  "theme_color": "#f5c842",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
