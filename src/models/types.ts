@@ -2,6 +2,7 @@ export type Orientation = 'portrait' | 'landscape';
 export type DisplayUnit = 'mm' | 'in';
 export type PaperPresetId = 'a4' | 'a5' | 'a3' | 'letter' | '4x6' | '5x7' | 'custom';
 export type ImageFit = 'fit' | 'fill';
+export type OverlapMode = 'off' | 'corners';
 
 export interface PhysicalSize {
   widthMm: number;
@@ -52,6 +53,10 @@ export interface ImageAsset {
 export interface PageModel {
   paper: PaperSettings;
   export: ExportSettings;
+  arrange: {
+    overlap: OverlapMode;
+    layoutSeed: number;
+  };
   images: PlacedImage[];
 }
 

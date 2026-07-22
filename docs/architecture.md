@@ -4,13 +4,15 @@
 
 Kairix Quick Layout & Print is a static client-side application. Cloudflare Pages serves the compiled files; all document state, original image bytes, preview rendering and export rendering remain inside the browser.
 
-The implementation separates five responsibilities:
+The implementation separates seven responsibilities:
 
 1. `src/models` defines paper, export, placed-image and source-asset interfaces.
 2. `src/features/canvas` renders a screen-resolution editor with React Konva.
 3. `src/features/export` creates an independent full-resolution canvas from the physical page model and original decoded image sources.
 4. `src/storage` persists only ordinary print preferences in IndexedDB.
 5. `src/components` contains the responsive controls and status presentation.
+6. `src/features/layout` generates and scores seeded physical-unit arrangements without touching source image data.
+7. `src/features/print` creates an isolated physical-size print document from the production export renderer.
 
 ## Geometry model
 
@@ -31,6 +33,8 @@ Photos are intentionally absent from IndexedDB. Reloading closes the session and
 Konva nodes are a view of the immutable page model. Drag and transform completion produces a new normalized frame. Undo and redo keep bounded page-model snapshots; source assets remain separate so history snapshots do not duplicate large image data.
 
 Low-resolution warnings compare intrinsic image pixels with its physical placement size. Export remains available because the user may intentionally accept the tradeoff, but enlargement is never silent.
+
+Initial imports and Auto Arrange are committed as single immutable page snapshots. Candidate layouts are generated in millimetres, converted to normalized page frames, then scored for useful area, coverage, balance, gaps, aspect preservation and constraint violations. Additional imports first use free-rectangle packing around existing placements. Overlap Off rejects intersections; Corners permits only small edge-corner intersections that do not enter either image's central region.
 
 ## Offline behaviour
 

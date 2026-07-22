@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Image as KonvaImage, Layer, Rect, Stage, Transformer } from 'react-konva';
 import Konva from 'konva';
-import type { ImageAsset, PaperSettings, PlacedImage } from '../../models/types';
+import type { ImageAsset, OverlapMode, PaperSettings, PlacedImage } from '../../models/types';
 import { calculateImageDraw, clampNormalizedRect } from '../../utils/imageGeometry';
+import { isPlacementAllowed } from '../layout/autoArrange';
 import { drawCalibrationSheet } from '../calibration/calibration';
 
 interface Props {
@@ -13,6 +14,9 @@ interface Props {
   onSelect: (id: string | null) => void;
   onChange: (id: string, image: PlacedImage) => void;
   onDropFiles: (files: File[]) => void;
+  overlap: OverlapMode;
+  fileDragActive?: boolean;
+  onConstraintViolation?: () => void;
   calibration?: boolean;
 }
 
@@ -75,7 +79,7 @@ function PlacedPhoto({
   pageHeight: number;
   selected: boolean;
   onSelect: () => void;
-  onChange: (image: PlacedImage) => void;
+  onChange: (image: PlacedImage) => boolean;
   nodeRef: (node: Konva.Group | null) => void;
 }) {
   const x = placed.frame.x * pageWidth;
@@ -111,7 +115,7 @@ function PlacedPhoto({
       onDragStart={onSelect}
       onDragEnd={(event) => {
         const node = event.target;
-        onChange({
+        const accepted = onChange({
           ...placed,
           frame: clampNormalizedRect({
             ...placed.frame,
@@ -119,6 +123,10 @@ function PlacedPhoto({
             y: node.y() / pageHeight,
           }),
         });
+        if (!accepted) {
+          node.position({ x, y });
+          node.getLayer()?.batchDraw();
+        }
       }}
       onTransformEnd={(event) => {
         const node = event.target;
@@ -130,7 +138,10 @@ function PlacedPhoto({
         });
         node.scaleX(1);
         node.scaleY(1);
-        onChange({ ...placed, frame: next });
+        if (!onChange({ ...placed, frame: next })) {
+          node.position({ x, y });
+          node.getLayer()?.batchDraw();
+        }
       }}
     >
       <Rect width={width} height={height} fill="#f2f0ea" stroke={selected ? '#b18300' : '#d7d3ca'} strokeWidth={selected ? 2 : 1} />
@@ -158,7 +169,7 @@ function PlacedPhoto({
   );
 }
 
-export function CanvasEditor({ paper, images, assets, selectedId, onSelect, onChange, onDropFiles, calibration = false }: Props) {
+export function CanvasEditor({ paper, images, assets, selectedId, onSelect, onChange, onDropFiles, overlap, fileDragActive = false, onConstraintViolation, calibration = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const nodesRef = useRef(new Map<string, Konva.Group>());
@@ -178,14 +189,16 @@ export function CanvasEditor({ paper, images, assets, selectedId, onSelect, onCh
   return (
     <div
       ref={containerRef}
-      className="canvas-workspace"
+      className={`canvas-workspace ${fileDragActive ? 'drop-target-active' : ''}`}
       data-testid="canvas-workspace"
+      data-drop-target="canvas"
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = 'copy';
       }}
       onDrop={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onDropFiles(Array.from(event.dataTransfer.files));
       }}
     >
@@ -226,7 +239,14 @@ export function CanvasEditor({ paper, images, assets, selectedId, onSelect, onCh
                   pageHeight={size.height}
                   selected={placed.id === selectedId}
                   onSelect={() => onSelect(placed.id)}
-                  onChange={(next) => onChange(placed.id, next)}
+                  onChange={(next) => {
+                    if (!isPlacementAllowed(next, images.filter((other) => other.id !== placed.id), paper, overlap)) {
+                      onConstraintViolation?.();
+                      return false;
+                    }
+                    onChange(placed.id, next);
+                    return true;
+                  }}
                   nodeRef={(node) => {
                     if (node) nodesRef.current.set(placed.id, node);
                     else nodesRef.current.delete(placed.id);

@@ -8,7 +8,8 @@ const image = (id: string, sourceId: string): PlacedImage => ({
   fit: 'fit', crop: null, locked: false, autoLayoutEligible: true,
 });
 const page = (images: PlacedImage[]): PageModel => ({
-  paper: paperSettingsFromPreferences(RECOMMENDED_PREFERENCES), export: { dpi: 300, format: 'png' }, images,
+  paper: paperSettingsFromPreferences(RECOMMENDED_PREFERENCES), export: { dpi: 300, format: 'png' },
+  arrange: { overlap: 'off', layoutSeed: 0 }, images,
 });
 
 describe('temporary image asset lifecycle', () => {

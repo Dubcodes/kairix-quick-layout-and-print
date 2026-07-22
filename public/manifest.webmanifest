@@ -1,8 +1,10 @@
 {
   "name": "Kairix Quick Layout & Print",
   "short_name": "Kairix Print",
-  "description": "Private, precise photo layout and print preparation on your device.",
+  "description": "Private, precise photo layout, direct printing and PNG export on your device.",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f3f1eb",
   "theme_color": "#f5c842",

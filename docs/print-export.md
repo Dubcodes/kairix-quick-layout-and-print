@@ -30,6 +30,12 @@ Browser canvas PNG encoders do not reliably add a physical print density. After 
 
 At 300 DPI it records `11,811` pixels per metre on both axes, with the unit flag set to metres. The PNG therefore carries both exact pixel dimensions and its intended physical density. Software that ignores metadata may still scale during printing, so users should select 100% or actual-size output in the printer dialog.
 
+## Direct printing
+
+The Print action calls the unchanged `renderPageToPng` production renderer, so it uses the selected physical paper size and DPI plus each original decoded photograph—not the scaled editor preview. The resulting PNG is the only visible content in a temporary isolated print document. Its CSS uses matching millimetre dimensions and an `@page` size with zero margins, excluding the editor, guides, selection controls, messages and page shadow.
+
+Browser and printer-driver support for physical CSS sizes varies. Users should choose Actual Size or 100%, disable Fit to page or Scale to fit, and verify results with the calibration utility. Export PNG is the fallback for applications or drivers that handle browser printing poorly.
+
 ## Print-quality warning
 
 Effective source PPI is calculated from each image's intrinsic pixel dimensions and its physical frame size. A visible warning appears when that value is below the selected output DPI. This is an advisory quality check and does not fabricate missing detail or alter the original image.

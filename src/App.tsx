@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BrandMark } from './components/BrandMark';
+import { CoffeeSupportLink } from './components/BrandingAssets';
 import { EditorToolbar } from './components/EditorToolbar';
 import { Icon } from './components/Icon';
+import { HelpPage } from './components/HelpPage';
 import { PhotoTray } from './components/PhotoTray';
 import { SettingsPanel } from './components/SettingsPanel';
 import { CanvasEditor } from './features/canvas/CanvasEditor';
 import { downloadExport, renderPageToPng } from './features/export/exportRenderer';
 import { importImageFile } from './features/import/importImages';
+import { dataTransferHasFiles, dataTransferHasSupportedImage, isInteractiveDropTarget } from './features/import/dropFiles';
+import { arrangementSignature, createAutoArrangement, isArrangementValid, isPlacementAllowed, placeImportedImages, type LayoutItem } from './features/layout/autoArrange';
+import { printPage } from './features/print/printDocument';
 import { referencedSourceIds } from './features/import/assetLifecycle';
 import { useHistory } from './hooks/useHistory';
 import { paperSettingsFromPreferences, RECOMMENDED_PREFERENCES } from './models/defaults';
-import type { DisplayUnit, ImageAsset, ImageFit, Orientation, PageModel, PaperPresetId, PlacedImage, StoredPreferences } from './models/types';
+import type { DisplayUnit, ImageAsset, ImageFit, Orientation, OverlapMode, PageModel, PaperPresetId, PlacedImage, StoredPreferences } from './models/types';
 import { loadPreferences, restoreRecommendedPreferences, savePreferences } from './storage/preferences';
 import { clampNormalizedRect } from './utils/imageGeometry';
 import { reframeImagesForPaper, rotatePlacedImage90 } from './utils/imageGeometry';
@@ -21,8 +26,34 @@ import { createCalibrationPaper } from './features/calibration/calibration';
 const initialPage: PageModel = {
   paper: paperSettingsFromPreferences(RECOMMENDED_PREFERENCES),
   export: { dpi: RECOMMENDED_PREFERENCES.dpi, format: 'png' },
+  arrange: { overlap: 'off', layoutSeed: 0 },
   images: [],
 };
+
+function makeLayoutItems(images: PlacedImage[], assets: Map<string, ImageAsset>): LayoutItem[] {
+  return images.flatMap((image) => {
+    const asset = assets.get(image.sourceId);
+    if (!asset) return [];
+    const aspectRatio = image.rotation % 180 === 0
+      ? asset.widthPx / asset.heightPx
+      : asset.heightPx / asset.widthPx;
+    return [{ image, aspectRatio }];
+  });
+}
+
+function layoutForChangedPaper(
+  current: PageModel,
+  nextPaper: PageModel['paper'],
+  reframed: PlacedImage[],
+  assets: Map<string, ImageAsset>,
+): Pick<PageModel, 'arrange' | 'images'> {
+  if (isArrangementValid(reframed, nextPaper, current.arrange.overlap, false)) {
+    return { arrange: current.arrange, images: reframed };
+  }
+  const seed = current.arrange.layoutSeed + 1;
+  const arranged = createAutoArrangement(makeLayoutItems(reframed, assets), nextPaper, current.arrange.overlap, seed);
+  return { arrange: { ...current.arrange, layoutSeed: seed }, images: arranged.images };
+}
 
 function preferencesFromPage(page: PageModel): StoredPreferences {
   return {
@@ -45,12 +76,39 @@ export default function App() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [printing, setPrinting] = useState(false);
   const [calibrationMode, setCalibrationMode] = useState(false);
+  const [route, setRoute] = useState(window.location.hash || '#/');
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     assetsRef.current = assets;
   }, [assets]);
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(window.location.hash || '#/');
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0 });
+  }, [route]);
+
+  useEffect(() => {
+    const preventFileNavigation = (event: DragEvent) => {
+      if (!event.dataTransfer || !dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.type === 'drop') setIsDraggingFiles(false);
+    };
+    window.addEventListener('dragover', preventFileNavigation, true);
+    window.addEventListener('drop', preventFileNavigation, true);
+    return () => {
+      window.removeEventListener('dragover', preventFileNavigation, true);
+      window.removeEventListener('drop', preventFileNavigation, true);
+    };
+  }, []);
 
   useEffect(() => () => {
     for (const asset of assetsRef.current.values()) URL.revokeObjectURL(asset.objectUrl);
@@ -92,6 +150,7 @@ export default function App() {
   const calibrationPage = useMemo<PageModel>(() => ({
     paper: createCalibrationPaper(),
     export: { dpi: 300, format: 'png' },
+    arrange: { overlap: 'off', layoutSeed: 0 },
     images: [],
   }), []);
   const displayedPage = calibrationMode ? calibrationPage : page;
@@ -117,22 +176,20 @@ export default function App() {
     const failures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 
     if (imported.length > 0) {
-      setAssets((current) => {
-        const next = new Map(current);
-        for (const item of imported) next.set(item.asset.id, item.asset);
-        return next;
-      });
+      const nextAssets = new Map(assetsRef.current);
+      for (const item of imported) nextAssets.set(item.asset.id, item.asset);
+      assetsRef.current = nextAssets;
+      setAssets(nextAssets);
       pageHistory.set((current) => {
-        const start = current.images.length;
-        const placed = imported.map((item, index) => ({
-          ...item.placed,
-          frame: {
-            ...item.placed.frame,
-            x: Math.min(0.62, 0.07 + ((start + index) % 4) * 0.08),
-            y: Math.min(0.64, 0.07 + ((start + index) % 5) * 0.07),
-          },
-        }));
-        return { ...current, images: [...current.images, ...placed] };
+        const seed = current.arrange.layoutSeed + 1;
+        const arranged = placeImportedImages(
+          makeLayoutItems(current.images, nextAssets),
+          makeLayoutItems(imported.map((item) => item.placed), nextAssets),
+          current.paper,
+          current.arrange.overlap,
+          seed,
+        );
+        return { ...current, arrange: { ...current.arrange, layoutSeed: seed }, images: arranged.images };
       });
       setSelectedId(imported.at(-1)?.placed.id ?? null);
       setMessage(`${imported.length} ${imported.length === 1 ? 'photo' : 'photos'} added. Nothing left your device.`);
@@ -145,6 +202,27 @@ export default function App() {
     }
   }, [pageHistory.set]);
 
+  const handleDroppedFiles = useCallback((files: File[]) => {
+    setIsDraggingFiles(false);
+    void importFiles(files);
+  }, [importFiles]);
+
+  const autoArrange = useCallback(() => {
+    pageHistory.set((current) => {
+      if (current.images.length === 0) return current;
+      const seed = current.arrange.layoutSeed + 1;
+      const arranged = createAutoArrangement(
+        makeLayoutItems(current.images, assetsRef.current),
+        current.paper,
+        current.arrange.overlap,
+        seed,
+        arrangementSignature(current.images),
+      );
+      return { ...current, arrange: { ...current.arrange, layoutSeed: seed }, images: arranged.images };
+    });
+    setMessage('A fresh automatic arrangement was applied. Undo restores the previous layout.');
+  }, [pageHistory.set]);
+
   const deleteSelected = useCallback(() => {
     if (!selectedId) return;
     pageHistory.set((current) => ({ ...current, images: current.images.filter((image) => image.id !== selectedId) }));
@@ -153,25 +231,50 @@ export default function App() {
 
   const duplicateSelected = useCallback(() => {
     if (!selected) return;
+    const asset = assetsRef.current.get(selected.sourceId);
+    if (!asset) return;
     const duplicate: PlacedImage = {
       ...selected,
       id: crypto.randomUUID(),
-      frame: clampNormalizedRect({ ...selected.frame, x: selected.frame.x + 0.035, y: selected.frame.y + 0.035 }),
+      fit: 'fit',
+      frame: clampNormalizedRect({ ...selected.frame }),
     };
-    pageHistory.set((current) => ({ ...current, images: [...current.images, duplicate] }));
+    pageHistory.set((current) => {
+      const seed = current.arrange.layoutSeed + 1;
+      const arranged = placeImportedImages(
+        makeLayoutItems(current.images, assetsRef.current),
+        makeLayoutItems([duplicate], assetsRef.current),
+        current.paper,
+        current.arrange.overlap,
+        seed,
+      );
+      return { ...current, arrange: { ...current.arrange, layoutSeed: seed }, images: arranged.images };
+    });
     setSelectedId(duplicate.id);
   }, [pageHistory.set, selected]);
 
   const rotateSelected = useCallback(() => {
-    if (!selectedId) return;
-    pageHistory.set((current) => ({
-      ...current,
-      images: current.images.map((image) => (
-        image.id === selectedId ? rotatePlacedImage90(image, current.paper) : image
-      )),
-    }));
+    if (!selected) return;
+    const rotated = rotatePlacedImage90(selected, page.paper);
+    if (!isPlacementAllowed(rotated, page.images.filter((other) => other.id !== selected.id), page.paper, page.arrange.overlap)) {
+      setMessage('Rotation would create a disallowed overlap. Move or resize the photo first.');
+      return;
+    }
+    pageHistory.set((current) => ({ ...current, images: current.images.map((image) => image.id === selected.id ? rotated : image) }));
     setMessage('Selected photo rotated 90°.');
-  }, [pageHistory.set, selectedId]);
+  }, [page.arrange.overlap, page.images, page.paper, pageHistory.set, selected]);
+
+  const setOverlap = (overlap: OverlapMode) => {
+    pageHistory.set((current) => {
+      const seed = current.arrange.layoutSeed + 1;
+      if (overlap === 'off' && !isArrangementValid(current.images, current.paper, 'off', false)) {
+        const arranged = createAutoArrangement(makeLayoutItems(current.images, assetsRef.current), current.paper, 'off', seed);
+        return { ...current, arrange: { overlap, layoutSeed: seed }, images: arranged.images };
+      }
+      return { ...current, arrange: { ...current.arrange, overlap } };
+    });
+    setMessage(overlap === 'off' ? 'Overlap Off: photo rectangles will stay separate.' : 'Corners: only small corner overlaps up to 5 mm are allowed.');
+  };
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -200,11 +303,9 @@ export default function App() {
         current.paper.orientation,
         presetId === 'custom' ? { widthMm: current.paper.widthMm, heightMm: current.paper.heightMm } : undefined,
       );
-      return {
-        ...current,
-        paper: { ...current.paper, presetId, ...size },
-        images: reframeImagesForPaper(current.images, current.paper, size),
-      };
+      const nextPaper = { ...current.paper, presetId, ...size };
+      const reframed = reframeImagesForPaper(current.images, current.paper, size);
+      return { ...current, paper: nextPaper, ...layoutForChangedPaper(current, nextPaper, reframed, assetsRef.current) };
     });
   };
 
@@ -213,11 +314,9 @@ export default function App() {
       const size = current.paper.presetId === 'custom'
         ? orientSize(current.paper, orientation)
         : getOrientedPaperSize(current.paper.presetId, orientation);
-      return {
-        ...current,
-        paper: { ...current.paper, orientation, ...size },
-        images: reframeImagesForPaper(current.images, current.paper, size),
-      };
+      const nextPaper = { ...current.paper, orientation, ...size };
+      const reframed = reframeImagesForPaper(current.images, current.paper, size);
+      return { ...current, paper: nextPaper, ...layoutForChangedPaper(current, nextPaper, reframed, assetsRef.current) };
     });
   };
 
@@ -232,11 +331,8 @@ export default function App() {
         ...current.paper,
         [axis === 'width' ? 'widthMm' : 'heightMm']: inputLengthToMm(value, current.paper.units),
       };
-      return {
-        ...current,
-        paper: nextPaper,
-        images: reframeImagesForPaper(current.images, current.paper, nextPaper),
-      };
+      const reframed = reframeImagesForPaper(current.images, current.paper, nextPaper);
+      return { ...current, paper: nextPaper, ...layoutForChangedPaper(current, nextPaper, reframed, assetsRef.current) };
     });
   };
 
@@ -264,12 +360,29 @@ export default function App() {
     }
   };
 
+  const printComposition = async () => {
+    setError(null);
+    setPrinting(true);
+    setMessage('Preparing the full-resolution page locally for printing…');
+    try {
+      await printPage(displayedPage, assets, { calibration: calibrationMode });
+      setMessage('Print dialog opened. Use Actual Size or 100% and disable Fit to page when available.');
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : 'The print document could not be prepared.';
+      setError(`${detail} Use Export PNG as a fallback.`);
+      setMessage(null);
+    } finally {
+      setPrinting(false);
+    }
+  };
+
   const restoreDefaults = async () => {
     const preferences = await restoreRecommendedPreferences();
     pageHistory.set((current) => ({
       ...current,
       paper: paperSettingsFromPreferences(preferences),
       export: { dpi: preferences.dpi, format: 'png' },
+      arrange: { ...current.arrange, overlap: 'off' },
     }));
     setMessage('Recommended A4, portrait, millimetre and 300 DPI settings restored.');
   };
@@ -281,10 +394,32 @@ export default function App() {
     setMessage(calibrationMode ? 'Photo layout restored.' : 'A4 calibration sheet ready. Print the export at Actual Size or 100%.');
   };
 
+  if (route === '#/help') return <HelpPage />;
+
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${isDraggingFiles ? 'is-file-dragging' : ''}`}
+      onDragEnter={(event) => {
+        if (!calibrationMode && dataTransferHasSupportedImage(event.dataTransfer)) setIsDraggingFiles(true);
+      }}
+      onDragOver={(event) => {
+        if (calibrationMode || !dataTransferHasFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        if (!isInteractiveDropTarget(event.target)) event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDraggingFiles(false);
+      }}
+      onDrop={(event) => {
+        if (!dataTransferHasFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        setIsDraggingFiles(false);
+        if (!calibrationMode && !isInteractiveDropTarget(event.target)) handleDroppedFiles(Array.from(event.dataTransfer.files));
+      }}
+    >
+      {isDraggingFiles && !calibrationMode && <div className="drop-overlay" role="status"><Icon name="upload" /><strong>Drop photos to add them</strong><span>JPEG, PNG and WebP stay on this device</span></div>}
       <header className="app-header">
-        <a className="brand" href="/" aria-label="Kairix Quick Layout and Print home">
+        <a className="brand" href="#/" aria-label="Kairix Quick Layout and Print home">
           <BrandMark />
           <span><strong>Kairix</strong> Quick Layout & Print</span>
         </a>
@@ -305,9 +440,11 @@ export default function App() {
 
       <EditorToolbar
         hasSelection={Boolean(selected)}
+        hasPhotos={page.images.length > 0}
         canUndo={pageHistory.canUndo}
         canRedo={pageHistory.canRedo}
         onPick={() => fileInputRef.current?.click()}
+        onAutoArrange={autoArrange}
         onUndo={pageHistory.undo}
         onRedo={pageHistory.redo}
         onDuplicate={duplicateSelected}
@@ -342,15 +479,14 @@ export default function App() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onFitChange={setSelectedFit}
+          overlap={page.arrange.overlap}
+          onOverlapChange={setOverlap}
+          onDropFiles={handleDroppedFiles}
         />}
-        <button
-          type="button"
-          className="mobile-calibration-button"
-          aria-label={calibrationMode ? 'Back to photo layout' : 'Print calibration'}
-          onClick={toggleCalibration}
-        >
-          {calibrationMode ? 'Back to photo layout' : 'Open print calibration utility'}
-        </button>
+        <div className="mobile-utility-row">
+          <button type="button" className="mobile-calibration-button" aria-label={calibrationMode ? 'Back to photo layout' : 'Print calibration'} onClick={toggleCalibration}>{calibrationMode ? 'Back to photo layout' : 'Open print calibration utility'}</button>
+          <a className="mobile-calibration-button" href="#/help">Help</a>
+        </div>
         <CanvasEditor
           paper={displayedPage.paper}
           images={displayedPage.images}
@@ -358,7 +494,10 @@ export default function App() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onChange={updatePlaced}
-          onDropFiles={(files) => void importFiles(files)}
+          onDropFiles={handleDroppedFiles}
+          overlap={page.arrange.overlap}
+          fileDragActive={isDraggingFiles}
+          onConstraintViolation={() => setMessage(page.arrange.overlap === 'off' ? 'Overlap is Off. Move or resize the photo into open space.' : 'Only small corner overlaps up to 5 mm are allowed.')}
           calibration={calibrationMode}
         />
         <SettingsPanel
@@ -366,18 +505,23 @@ export default function App() {
           dpi={displayedPage.export.dpi}
           outputPixels={outputPixels}
           exporting={exporting}
+          printing={printing}
           onPresetChange={setPaperPreset}
           onOrientationChange={setOrientation}
           onUnitsChange={setUnits}
           onCustomSizeChange={setCustomSize}
           onDpiChange={setDpi}
           onExport={() => void exportPng()}
+          onPrint={() => void printComposition()}
           onRestoreDefaults={() => void restoreDefaults()}
           calibrationMode={calibrationMode}
         />
       </main>
 
-      <footer className="app-footer">A private, offline-ready print workspace · No accounts · No analytics · No cloud processing</footer>
+      <footer className="app-footer">
+        <span>A private, offline-ready print workspace · No accounts · No analytics · No cloud processing</span>
+        <CoffeeSupportLink />
+      </footer>
     </div>
   );
 }

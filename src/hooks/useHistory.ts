@@ -8,6 +8,7 @@ export interface HistoryState<T> {
 
 export function pushHistory<T>(history: HistoryState<T>, value: T, replace = false): HistoryState<T> {
   if (replace) return { ...history, present: value };
+  if (Object.is(history.present, value)) return history;
   return { past: [...history.past, history.present].slice(-50), present: value, future: [] };
 }
 
