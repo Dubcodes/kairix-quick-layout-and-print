@@ -8,7 +8,9 @@
     "check": "tsc -b --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "build": "tsc -b --pretty false && vite build"
+    "build": "tsc -b --pretty false && vite build",
+    "deploy": "npm run build && wrangler deploy",
+    "preview": "npm run build && wrangler dev"
   },
   "dependencies": {
     "konva": "^9.3.20",
@@ -17,6 +19,7 @@
     "react-konva": "^18.2.10"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.46.0",
     "@playwright/test": "^1.54.1",
     "@types/node": "^22.15.30",
     "@types/react": "^18.3.23",
@@ -24,6 +27,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "^5.8.3",
     "vite": "^6.1.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "wrangler": "^4.113.0"
   }
 }
